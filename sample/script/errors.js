@@ -1,64 +1,13 @@
-// должна отвечать интерфейсу:
-// входной параметр - список токенов для отображения
-// возвращает объект токена с айди и пином { id , pin }
-function $pinResolver(tokens) {
-    return new Promise(function (resolve, reject) {
-        var tokenpin = $('#tokenpin');
-        var tokenpin_tokens = $('#tokenpin_tokens');
+function CryptoPlugin(plugin) {
 
-        tokenpin_tokens.empty();
-        tokens.forEach(function (token, i) {
-            var token_select = $('<input type="radio" name="token_select" id="token' + token + '" value="' + i + '" />');
-            var token_select_label = $('<label for="token' + token + '">' + token + '</label>');
-            token_select.appendTo(tokenpin_tokens);
-            token_select_label.appendTo(tokenpin_tokens);
-            $('<br />').appendTo(tokenpin_tokens);
-        });
-
-        var tokenpin_value = $('#tokenpin_value');
-
-        tokenpin.show();
-        $('#tokenpin_enter').unbind('click');
-        $('#tokenpin_enter').bind('click', function (evt) {
-            var id = $('input[name=token_select]:checked').val();
-            var pin = tokenpin_value.val();
-
-            if (typeof id !== 'undefined' && pin) {
-                resolve({
-                    id: id,
-                    pin: pin
-                });
-                tokenpin.hide();
-            } else {
-                reject();
-            }
-        });
-
-    });
-}
-function CryptoPlugin(plugin, pinResolver) {
-
-
+    this.pluginObject = plugin;
     this.errorDescription = [];
-    if (!plugin.valid) {
+
+    if (!this.pluginObject.valid) {
         throw 'Не удается получить объект плагина';
     }
 
-    this.pluginObject = plugin;
-
-    var currentDevice = {},
-        options = {
-            useHardwareHash: false,
-            computeHash: false,
-            hashAlgorithm: plugin.HASH_TYPE_GOST3411_94
-        };
-
-    for (var key in this.pluginObject) {
-        this[key] = this.pluginObject[key];
-    }
-
-    this.errorCodes = plugin.errorCodes;
-
+    this.errorCodes = this.pluginObject.errorCodes;
     this.errorDescription[this.errorCodes.UNKNOWN_ERROR] = "Неизвестная ошибка";
     this.errorDescription[this.errorCodes.BAD_PARAMS] = "Неправильные параметры";
     this.errorDescription[this.errorCodes.NOT_ENOUGH_MEMORY] = "Недостаточно памяти";
@@ -151,98 +100,5 @@ function CryptoPlugin(plugin, pinResolver) {
     this.errorDescription[this.errorCodes.X509_CRL_PATH_VALIDATION_ERROR] = "Неправильный путь CRL";
     this.errorDescription[this.errorCodes.CMS_CERTIFICATE_ALREADY_PRESENT] = "Сертификат уже используется";
     this.errorDescription[this.errorCodes.CANT_HARDWARE_VERIFY_CMS] = "Проверка множественной подписи с вычислением хеша на устройстве не поддерживается";
-
-    this.getError = function (reason) {
-        return this.errorDescription[reason.message || reason] || reason;
-    };
-
-    this.getConatainerNameFromHex = function (str) {
-        return (":" + str).split(':').reduce(function (str, i) {
-            return str + String.fromCharCode('0x' + i);
-        });
-    };
-
-    this.getConatainerHexFromName = function (str) {
-        return str.split('').map(function (letter, i) {
-            return letter.charCodeAt(0).toString(16);
-        }).join(':');
-    };
-
-    this.rtwIsTokenPresentAndOK = function () {
-        currentDevice = {};
-        return plugin.enumerateDevices().then(function (devices) {
-            console.log(devices);
-            if (devices.length === 0) {
-                throw this.errorCodes.DEVICE_NOT_FOUND;
-            }
-            return Promise.all(devices.map(function (dev) {
-                return plugin.getDeviceInfo(dev, plugin.TOKEN_INFO_SERIAL);
-            }));
-        }).then(function (tokens) {
-            return pinResolver(tokens);
-        }).then(function (selectedToken) {
-            currentDevice = selectedToken;
-            return plugin.getDeviceInfo(currentDevice.id, plugin.TOKEN_INFO_IS_LOGGED_IN);
-        }).then(function (result) {
-            if (result) {
-                return plugin.logout(currentDevice.id);
-            } else {
-                return Promise.resolve(true);
-            }
-        }).then(function () {
-            return plugin.removePin(currentDevice.id);
-        }).then(function () {
-            return plugin.login(currentDevice.id, currentDevice.pin);
-        }).then(function (result) {
-            return true;
-        }, function (error) {
-            plugin.logout();
-            throw error;
-        });
-    };
-
-    this.rtwGetNumberOfContainers = function () {
-        return plugin.enumerateKeys(currentDevice.id, '').then(function (result) {
-            currentDevice.keys = result;
-            return result.length;
-        });
-    };
-
-    this.rtwGetContainerName = function (containerNumber) {
-        return this.getConatainerNameFromHex(currentDevice.keys[containerNumber]);
-    };
-
-    this.rtwSign = function (keyName, message) {
-        // плагин принимает хэш на подпись в другом порядке байт, переворачиваем
-        var messageReversed = message.match(/.{2}/g).reverse().join(':');
-        var keyId = this.getConatainerHexFromName(keyName);
-
-        return plugin.rawSign(currentDevice.id, keyId, messageReversed, options).then(function (res) {
-            //Результирующую подпись нужно привести к формату Рутокенвэб. 
-            //Результирующая подпись выходит в формате be(leR & leS). Сначала получим leR & leS, затем beR & beS.
-            var sign = res.split(':').reverse();
-            var R = sign.splice(0, sign.length / 2).reverse();
-            var S = sign.reverse();
-
-            return R.join('') + S.join('');
-        });
-    };
-
-    this.rtwGenKeyPair = function (containerName) {
-        var keyOptions = {
-            id: this.getConatainerHexFromName(containerName),
-            paramset: "A",
-            publicKeyAlgorithm: plugin.PUBLIC_KEY_ALGORITHM_GOST3410_2001,
-            signatureSize: 512
-        };
-        return plugin.generateKeyPair(currentDevice.id, undefined, '', keyOptions).then(function (keyid) {
-            return plugin.getPublicKeyValue(currentDevice.id, keyid, {});
-        }).then(function(publicKey){
-            var res = publicKey.split(':').reverse();
-            var A = res.splice(0, res.length / 2);
-            var B = res;
-            return (B.join('') + A.join('')).toUpperCase();
-        });
-    }
 
 }
